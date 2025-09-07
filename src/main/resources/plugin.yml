@@ -1,0 +1,25 @@
+name: KSR-SQL-Whitelist
+version: '1.0-SNAPSHOT'
+main: ch.ksrminecraft.kSRSQLWhitelist.KSRSQLWhitelist
+api-version: '1.21'
+authors: [ "Timy Liniger" ]
+description: SQL-backed whitelist management
+website: https://ksrminecraft.ch/
+
+permissions:
+  KSRSQLWhitelist.*:
+    description: Access to all SQL-Whitelist actions
+    children:
+      KSRSQLWhitelist.add: true
+      KSRSQLWhitelist.del: true
+      KSRSQLWhitelist.on: true
+      KSRSQLWhitelist.off: true
+
+  KSRSQLWhitelist.add:
+    default: op
+  KSRSQLWhitelist.del:
+    default: op
+  KSRSQLWhitelist.on:
+    default: op
+  KSRSQLWhitelist.off:
+    default: op

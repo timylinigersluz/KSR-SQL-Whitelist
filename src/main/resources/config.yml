@@ -1,0 +1,24 @@
+########################################################
+# KSR-SQL-Whitelist - Configuration
+# Plugin by Timy Liniger (https://ksrminecraft.ch/)
+########################################################
+
+# ================================
+# MySQL Database Settings
+# ================================
+mysql:
+  host: localhost
+  port: 3306
+  database: KSRMC-Registration
+  user: root
+  password: example
+
+  # Name der Tabelle, in der die Whitelist-Einträge gespeichert werden
+  table: mysql_whitelist
+
+# ================================
+# Whitelist Settings
+# ================================
+
+# Ob die Whitelist beim Start aktiviert ist (true/false)
+enabled: true
