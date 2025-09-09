@@ -17,37 +17,53 @@ public class WhitelistService {
 
     /** Prüft, ob Spieler whitelisted ist und synchronisiert ggf. Name/UUID. */
     public boolean isWhitelisted(UUID uuid, String name) throws SQLException {
-        final String selectByUUID =
-                "SELECT 1 FROM `" + db.table() + "` WHERE `UUID` = ? LIMIT 1";
-        final String selectByNameNoUUID =
-                "SELECT 1 FROM `" + db.table() + "` WHERE `user` = ? AND (`UUID` IS NULL OR `UUID` = '') LIMIT 1";
-        final String updateSetName =
-                "UPDATE `" + db.table() + "` SET `user` = ? WHERE `UUID` = ?";
-        final String updateAttachUUID =
-                "UPDATE `" + db.table() + "` SET `UUID` = ? WHERE `user` = ? AND (`UUID` IS NULL OR `UUID` = '')";
+        final String selectByUUID = "SELECT `UUID` FROM `" + db.table() + "` " +
+                "WHERE `UUID` = ? OR REPLACE(`UUID`, '-', '') = ? LIMIT 1";
+        final String selectByNameNoUUID = "SELECT 1 FROM `" + db.table() + "` " +
+                "WHERE `user` = ? AND (`UUID` IS NULL OR `UUID` = '') LIMIT 1";
+        final String updateSetName = "UPDATE `" + db.table() + "` SET `user` = ? WHERE `UUID` = ?";
+        final String updateAttachUUID = "UPDATE `" + db.table() + "` SET `UUID` = ? " +
+                "WHERE `user` = ? AND (`UUID` IS NULL OR `UUID` = '')";
 
-        try (Connection c = db.openConnection()) {
-            // 1) UUID vorhanden?
-            try (PreparedStatement ps = c.prepareStatement(selectByUUID)) {
-                ps.setString(1, uuid.toString());
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        try (PreparedStatement up = c.prepareStatement(updateSetName)) {
-                            up.setString(1, name);
-                            up.setString(2, uuid.toString());
-                            up.executeUpdate();
+        String uuidDashed = uuid.toString();
+        String uuidRaw = uuidDashed.replace("-", "");
+
+        try (Connection c = db.openConnection();
+             PreparedStatement ps = c.prepareStatement(selectByUUID)) {
+
+            ps.setString(1, uuidDashed);
+            ps.setString(2, uuidRaw);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    String found = rs.getString("UUID");
+                    // Falls der Treffer ohne Bindestriche war → direkt korrigieren
+                    if (found != null && found.length() == 32) {
+                        try (PreparedStatement fix = c.prepareStatement(
+                                "UPDATE `" + db.table() + "` SET `UUID` = ? WHERE `UUID` = ?")) {
+                            fix.setString(1, uuidDashed);
+                            fix.setString(2, found);
+                            fix.executeUpdate();
+                            plugin.getLogger().warning("Fixed malformed UUID for " + name + " (" + found + " → " + uuidDashed + ")");
                         }
-                        return true;
                     }
+                    // Immer den Namen aktuell halten
+                    try (PreparedStatement up = c.prepareStatement(updateSetName)) {
+                        up.setString(1, name);
+                        up.setString(2, uuidDashed);
+                        up.executeUpdate();
+                    }
+                    return true;
                 }
             }
-            // 2) Namenseintrag ohne UUID → UUID nachtragen
+
+            // Fallback: Eintrag nur nach Name ohne UUID
             try (PreparedStatement ps2 = c.prepareStatement(selectByNameNoUUID)) {
                 ps2.setString(1, name);
                 try (ResultSet rs2 = ps2.executeQuery()) {
                     if (rs2.next()) {
                         try (PreparedStatement up2 = c.prepareStatement(updateAttachUUID)) {
-                            up2.setString(1, uuid.toString());
+                            up2.setString(1, uuidDashed);
                             up2.setString(2, name);
                             up2.executeUpdate();
                         }
@@ -58,6 +74,7 @@ public class WhitelistService {
         }
         return false;
     }
+
 
     /** Online-Spieler mit UUID+Name eintragen/aktualisieren. */
     public void addOrUpdateOnline(Player online) throws SQLException {

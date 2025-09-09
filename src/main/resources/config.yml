@@ -12,9 +12,9 @@ mysql:
   database: KSRMC-Registration
   user: root
   password: example
-
-  # Name der Tabelle, in der die Whitelist-Einträge gespeichert werden
   table: mysql_whitelist
+  useSSL: false
+  serverTimezone: UTC
 
 # ================================
 # Whitelist Settings
@@ -22,3 +22,10 @@ mysql:
 
 # Ob die Whitelist beim Start aktiviert ist (true/false)
 enabled: true
+
+# Kick-Messages
+
+kick:
+  not_whitelisted: "&cLeider bist du nicht auf unserer Whitelist.&r\n&7Registriere dich auf https://ksrminecraft.ch."
+  db_error: "&cEs gab einen internen Fehler mit der Datenbank.&r\n&7Bitte versuche es später erneut oder melde dich auf unserem Discord."
+

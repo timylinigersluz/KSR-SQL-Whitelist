@@ -23,17 +23,15 @@ public class Database {
         String user = req("mysql.user");
         String pass = req("mysql.password");
 
-        // Baue URL mit sinnvollen Defaults.
-        // Hinweise:
-        // - serverTimezone kann auf "UTC" gesetzt werden, falls nötig.
-        // - allowPublicKeyRetrieval=true nur verwenden, wenn SSL aus ist
-        //   und der Server es verlangt.
+        // SSL standardmäßig deaktivieren, außer in der Config explizit true
+        boolean useSSL = plugin.getConfig().getBoolean("mysql.useSSL", false);
+        String serverTimezone = plugin.getConfig().getString("mysql.serverTimezone", "UTC");
+
         String params = String.join("&",
                 "useUnicode=true",
                 "characterEncoding=UTF-8",
-                "useSSL=" + plugin.getConfig().getBoolean("mysql.useSSL", true),
-                "serverTimezone=" + plugin.getConfig().getString("mysql.serverTimezone", "UTC")
-                // ,"allowPublicKeyRetrieval=true" // nur falls unbedingt nötig
+                "useSSL=" + useSSL,
+                "serverTimezone=" + serverTimezone
         );
 
         String url = "jdbc:mysql://" + host + ":" + port + "/" + db + "?" + params;

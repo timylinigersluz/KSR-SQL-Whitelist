@@ -1,6 +1,6 @@
 package ch.ksrminecraft.kSRSQLWhitelist;
 
-import ch.ksrminecraft.kSRSQLWhitelist.listeners.LoginListener;
+import ch.ksrminecraft.kSRSQLWhitelist.listeners.PreLoginListener;
 import ch.ksrminecraft.kSRSQLWhitelist.listeners.WhitelistCommandInterceptor;
 import ch.ksrminecraft.kSRSQLWhitelist.utils.Database;
 import ch.ksrminecraft.kSRSQLWhitelist.utils.WhitelistService;
@@ -26,7 +26,7 @@ public class KSRSQLWhitelist extends JavaPlugin {
             getLogger().log(Level.SEVERE, "Failed to ensure DB table", e);
         }
 
-        getServer().getPluginManager().registerEvents(new LoginListener(this, whitelistService), this);
+        getServer().getPluginManager().registerEvents(new PreLoginListener(this, whitelistService), this);
         getServer().getPluginManager().registerEvents(new WhitelistCommandInterceptor(this, whitelistService), this);
 
         getLogger().info(getDescription().getName() + " v" + getDescription().getVersion() + " enabled.");
