@@ -63,6 +63,7 @@ public class KSRSQLWhitelist extends JavaPlugin {
         // 4️⃣ Event-Listener registrieren
         getServer().getPluginManager().registerEvents(new PreLoginListener(this, whitelistService), this);
         getServer().getPluginManager().registerEvents(new WhitelistCommandInterceptor(this, whitelistService), this);
+        getCommand("whitelist").setTabCompleter(new ch.ksrminecraft.kSRSQLWhitelist.commands.WhitelistTabCompleter(this));
 
         // 5️⃣ Erfolgsnachricht ins Log schreiben
         getLogger().info(getDescription().getName() + " v" + getDescription().getVersion() + " enabled.");

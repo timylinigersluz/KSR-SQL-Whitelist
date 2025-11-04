@@ -3,7 +3,11 @@ package ch.ksrminecraft.kSRSQLWhitelist.utils;
 import ch.ksrminecraft.kSRSQLWhitelist.KSRSQLWhitelist;
 import org.bukkit.entity.Player;
 
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.sql.*;
+import java.util.Scanner;
 import java.util.UUID;
 
 /**
@@ -13,15 +17,15 @@ import java.util.UUID;
  *  Zentrale Service-Klasse für alle SQL-basierten Whitelist-Operationen.
  *
  *  Hauptfunktionen:
- *   - Prüft, ob ein Spieler in der Whitelist-Datenbank eingetragen ist
+ *   - Prüft, ob Spieler in der Datenbank whitelisted sind
  *   - Fügt neue Spieler hinzu (online oder offline)
  *   - Entfernt Spieler aus der Datenbank
- *   - Listet alle Whitelist-Einträge auf
- *   - Aktualisiert Namen oder UUIDs bei Bedarf (Synchronisierung)
+ *   - Listet alle gespeicherten Whitelist-Namen auf
+ *   - Synchronisiert UUIDs und Namen automatisch
  *
  *  💡 Besonderheit:
  *   Diese Klasse arbeitet mit der {@link Database}-Klasse zusammen,
- *   die Tabellennamen und Spaltennamen dynamisch aus der config.yml liest.
+ *   welche Tabellen- und Spaltennamen dynamisch aus der config.yml liest.
  *
  *  Autor: Timy Liniger (KSR Minecraft)
  *  Projekt: KSR-SQL-Whitelist
@@ -29,14 +33,14 @@ import java.util.UUID;
  */
 public class WhitelistService {
 
-    /** Hauptinstanz des Plugins (für Logging und Config-Zugriff). */
+    /** Hauptinstanz des Plugins (für Logging, Config, etc.) */
     private final KSRSQLWhitelist plugin;
 
-    /** Hilfsklasse für Datenbankverbindungen und Tabelleninformationen. */
+    /** Datenbank-Verwaltung (stellt Verbindungen & Tabelleninfos bereit) */
     private final Database db;
 
     /**
-     * Konstruktor.
+     * Konstruktor zur Initialisierung des Whitelist-Service.
      *
      * @param plugin Plugin-Instanz
      * @param db     Datenbank-Verwaltungsklasse
@@ -47,27 +51,22 @@ public class WhitelistService {
     }
 
     // ------------------------------------------------------------------------
-    // ✅ Whitelist-Abfrage
+    // ✅ Prüfung, ob Spieler whitelisted ist
     // ------------------------------------------------------------------------
 
     /**
-     * Prüft, ob ein Spieler whitelisted ist.
-     * <p>
-     * Dabei werden folgende Fälle berücksichtigt:
-     * 1️⃣ Direkter Treffer per UUID (mit oder ohne Bindestriche)
-     * 2️⃣ Eintrag mit passendem Namen, aber ohne UUID → wird aktualisiert
-     * 3️⃣ Name- oder UUID-Felder werden automatisch synchronisiert
+     * Prüft, ob ein Spieler in der Datenbank whitelisted ist.
+     * Führt außerdem automatische Synchronisierung von UUID und Name durch.
      *
-     * @param uuid UUID des Spielers (mit Bindestrichen)
+     * @param uuid UUID des Spielers
      * @param name Aktueller Spielername
-     * @return true, wenn der Spieler in der Whitelist ist
+     * @return true, wenn der Spieler whitelisted ist
      * @throws SQLException bei Datenbankfehlern
      */
     public boolean isWhitelisted(UUID uuid, String name) throws SQLException {
         String colUUID = db.columnUUID();
         String colName = db.columnName();
 
-        // SQL-Statements dynamisch auf Basis der Config-Spaltennamen erstellen
         final String selectByUUID = "SELECT `" + colUUID + "` FROM `" + db.table() + "` " +
                 "WHERE `" + colUUID + "` = ? OR REPLACE(`" + colUUID + "`, '-', '') = ? LIMIT 1";
         final String selectByNameNoUUID = "SELECT 1 FROM `" + db.table() + "` " +
@@ -79,32 +78,28 @@ public class WhitelistService {
         String uuidDashed = uuid.toString();
         String uuidRaw = uuidDashed.replace("-", "");
 
-        // Verbindung zur Datenbank öffnen
         try (Connection c = db.openConnection();
              PreparedStatement ps = c.prepareStatement(selectByUUID)) {
 
-            // UUID in beiden Formaten (mit/ohne Bindestriche) prüfen
             ps.setString(1, uuidDashed);
             ps.setString(2, uuidRaw);
 
-            // 🔍 1. Prüfung: Eintrag mit passender UUID vorhanden?
+            // 🔍 Treffer über UUID prüfen
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     String found = rs.getString(colUUID);
-
-                    // Wenn UUID ohne Bindestriche gespeichert war → korrigieren
+                    // korrigiere ggf. fehlerhafte UUID-Formate
                     if (found != null && found.length() == 32) {
                         try (PreparedStatement fix = c.prepareStatement(
                                 "UPDATE `" + db.table() + "` SET `" + colUUID + "` = ? WHERE `" + colUUID + "` = ?")) {
                             fix.setString(1, uuidDashed);
                             fix.setString(2, found);
                             fix.executeUpdate();
-                            plugin.getLogger().warning("Fixed malformed UUID for " + name +
-                                    " (" + found + " → " + uuidDashed + ")");
+                            plugin.getLogger().warning("Fixed malformed UUID for " + name + " (" + found + " → " + uuidDashed + ")");
                         }
                     }
 
-                    // Namen aktualisieren (z. B. wenn Spieler sich umbenannt hat)
+                    // Namen immer aktuell halten
                     try (PreparedStatement up = c.prepareStatement(updateSetName)) {
                         up.setString(1, name);
                         up.setString(2, uuidDashed);
@@ -114,12 +109,11 @@ public class WhitelistService {
                 }
             }
 
-            // 🔍 2. Prüfung: Nur Name bekannt, aber keine UUID vorhanden
+            // 🔍 Fallback: Spielername vorhanden, aber keine UUID
             try (PreparedStatement ps2 = c.prepareStatement(selectByNameNoUUID)) {
                 ps2.setString(1, name);
                 try (ResultSet rs2 = ps2.executeQuery()) {
                     if (rs2.next()) {
-                        // UUID beim ersten Login automatisch ergänzen
                         try (PreparedStatement up2 = c.prepareStatement(updateAttachUUID)) {
                             up2.setString(1, uuidDashed);
                             up2.setString(2, name);
@@ -131,17 +125,15 @@ public class WhitelistService {
             }
         }
 
-        // Kein Treffer → Spieler nicht auf der Whitelist
         return false;
     }
 
     // ------------------------------------------------------------------------
-    // ➕ Spieler hinzufügen (online/offline)
+    // ➕ Spieler hinzufügen
     // ------------------------------------------------------------------------
 
     /**
-     * Fügt einen **online** verbundenen Spieler zur Whitelist hinzu oder aktualisiert ihn.
-     * Verwendet UUID + Name.
+     * Fügt einen online verbundenen Spieler zur Whitelist hinzu oder aktualisiert ihn.
      *
      * @param online Online-Spielerobjekt
      * @throws SQLException Wenn ein Datenbankfehler auftritt
@@ -151,46 +143,88 @@ public class WhitelistService {
     }
 
     /**
-     * Fügt einen **Offline-Spielernamen** zur Whitelist hinzu.
-     * Die UUID wird später beim ersten Login automatisch ergänzt.
+     * Fügt einen Offline-Spieler zur Whitelist hinzu, sofern ein offizieller Mojang-Account existiert.
+     * Die UUID wird automatisch über die Mojang-API ermittelt.
      *
-     * @param name Spielername (Offline)
-     * @throws SQLException Wenn ein Datenbankfehler auftritt
+     * @param name Spielername
+     * @throws SQLException Wenn kein offizieller Account gefunden oder DB-Fehler auftritt
      */
     public void addOfflineName(String name) throws SQLException {
         String colUUID = db.columnUUID();
         String colName = db.columnName();
+        final String exists = "SELECT 1 FROM `" + db.table() + "` WHERE `" + colName + "` = ? LIMIT 1";
+        final String insert = "INSERT INTO `" + db.table() + "` (`" + colUUID + "`, `" + colName + "`) VALUES (?, ?)";
 
-        final String exists = "SELECT 1 FROM `" + db.table() + "` WHERE `" + colName + "` = ? " +
-                "AND (`" + colUUID + "` IS NULL OR `" + colUUID + "` = '') LIMIT 1";
-        final String insert = "INSERT INTO `" + db.table() + "` (`" + colName + "`) VALUES (?)";
-
+        // Prüfen, ob Spieler schon existiert
         try (Connection c = db.openConnection();
              PreparedStatement sel = c.prepareStatement(exists)) {
             sel.setString(1, name);
             try (ResultSet rs = sel.executeQuery()) {
-                // Nur einfügen, wenn noch kein passender Eintrag existiert
-                if (!rs.next()) {
-                    try (PreparedStatement ins = c.prepareStatement(insert)) {
-                        ins.setString(1, name);
-                        ins.executeUpdate();
-                    }
+                if (rs.next()) {
+                    return; // bereits vorhanden
                 }
             }
+        }
+
+        // UUID über Mojang-API abrufen
+        String uuid = fetchUUIDFromMojang(name);
+        if (uuid == null) {
+            plugin.getLogger().warning("[KSR-SQL-Whitelist] Could not find Mojang UUID for player '" + name + "'.");
+            throw new SQLException("Player '" + name + "' is not a valid Mojang account.");
+        }
+
+        // Einfügen
+        try (Connection c = db.openConnection();
+             PreparedStatement ins = c.prepareStatement(insert)) {
+            ins.setString(1, uuid);
+            ins.setString(2, name);
+            ins.executeUpdate();
+            plugin.getLogger().info("[KSR-SQL-Whitelist] Added Mojang-verified player: " + name + " (" + uuid + ")");
+        }
+    }
+
+    /**
+     * Fragt die UUID eines Spielers über die Ashcon-API ab.
+     *
+     * @param playerName Minecraft-Name
+     * @return UUID mit Bindestrichen oder null, falls nicht gefunden
+     */
+    private String fetchUUIDFromMojang(String playerName) {
+        try {
+            URL url = new URL("https://api.ashcon.app/mojang/v2/user/" + playerName);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestProperty("User-Agent", "KSR-SQL-Whitelist");
+            conn.setConnectTimeout(4000);
+            conn.setReadTimeout(4000);
+            conn.setRequestMethod("GET");
+
+            if (conn.getResponseCode() != 200) {
+                plugin.getLogger().warning("[KSR-SQL-Whitelist] Ashcon API returned " +
+                        conn.getResponseCode() + " for " + playerName);
+                return null;
+            }
+
+            try (InputStream is = conn.getInputStream();
+                 Scanner scanner = new Scanner(is).useDelimiter("\\A")) {
+                String json = scanner.hasNext() ? scanner.next() : "";
+                if (json.isEmpty()) return null;
+
+                org.json.JSONObject obj = new org.json.JSONObject(json);
+                String rawUUID = obj.optString("uuid", null);
+                if (rawUUID == null || rawUUID.isEmpty()) return null;
+                return rawUUID;
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[KSR-SQL-Whitelist] Failed to fetch UUID via Ashcon for " +
+                    playerName + ": " + e.getMessage());
+            return null;
         }
     }
 
     // ------------------------------------------------------------------------
-    // ❌ Spieler entfernen
+    // ❌ Spieler löschen
     // ------------------------------------------------------------------------
 
-    /**
-     * Entfernt einen Spieler anhand seiner UUID aus der Whitelist.
-     *
-     * @param uuid UUID des Spielers
-     * @return Anzahl der betroffenen Datensätze (0 = kein Treffer)
-     * @throws SQLException Wenn ein Datenbankfehler auftritt
-     */
     public int deleteByUUID(UUID uuid) throws SQLException {
         String colUUID = db.columnUUID();
         final String del = "DELETE FROM `" + db.table() + "` WHERE `" + colUUID + "` = ?";
@@ -201,13 +235,6 @@ public class WhitelistService {
         }
     }
 
-    /**
-     * Entfernt einen Spieler anhand seines Namens aus der Whitelist.
-     *
-     * @param name Spielername
-     * @return Anzahl der betroffenen Datensätze (0 = kein Treffer)
-     * @throws SQLException Wenn ein Datenbankfehler auftritt
-     */
     public int deleteByName(String name) throws SQLException {
         String colName = db.columnName();
         final String del = "DELETE FROM `" + db.table() + "` WHERE `" + colName + "` = ?";
@@ -219,25 +246,15 @@ public class WhitelistService {
     }
 
     // ------------------------------------------------------------------------
-    // 🧩 Eintrag hinzufügen oder aktualisieren
+    // 🧩 Upsert (Insert or Update)
     // ------------------------------------------------------------------------
 
-    /**
-     * Fügt einen Eintrag hinzu oder aktualisiert ihn, falls bereits vorhanden.
-     * <p>
-     * Verwendet MySQLs "ON DUPLICATE KEY UPDATE", sofern ein UNIQUE KEY auf
-     * der UUID-Spalte vorhanden ist.
-     *
-     * @param uuid UUID des Spielers
-     * @param name Aktueller Spielername
-     * @throws SQLException Wenn ein Datenbankfehler auftritt
-     */
     private void addOrUpdateWhitelist(UUID uuid, String name) throws SQLException {
         String colUUID = db.columnUUID();
         String colName = db.columnName();
-
         final String upsert = "INSERT INTO `" + db.table() + "` (`" + colUUID + "`, `" + colName + "`) VALUES (?, ?) " +
                 "ON DUPLICATE KEY UPDATE `" + colName + "` = VALUES(`" + colName + "`)";
+
         try (Connection c = db.openConnection();
              PreparedStatement ps = c.prepareStatement(upsert)) {
             ps.setString(1, uuid.toString());
@@ -247,15 +264,9 @@ public class WhitelistService {
     }
 
     // ------------------------------------------------------------------------
-    // 📋 Whitelist-Liste abrufen
+    // 📋 Whitelist abrufen
     // ------------------------------------------------------------------------
 
-    /**
-     * Gibt eine Liste aller aktuell gespeicherten Spielernamen in der Whitelist zurück.
-     *
-     * @return Liste der Namen
-     * @throws SQLException Wenn ein Datenbankfehler auftritt
-     */
     public java.util.List<String> listWhitelistedNames() throws SQLException {
         String colName = db.columnName();
         final String sql = "SELECT DISTINCT `" + colName + "` FROM `" + db.table() + "` " +
@@ -270,5 +281,19 @@ public class WhitelistService {
             }
         }
         return out;
+    }
+
+    // ------------------------------------------------------------------------
+    // 🧱 Getter für Database
+    // ------------------------------------------------------------------------
+
+    /**
+     * Gibt die aktuelle {@link Database}-Instanz zurück.
+     * Wird u.a. von Command-Klassen genutzt, um SQL-Abfragen auszuführen.
+     *
+     * @return die aktive Database-Instanz
+     */
+    public Database getDatabase() {
+        return db;
     }
 }
