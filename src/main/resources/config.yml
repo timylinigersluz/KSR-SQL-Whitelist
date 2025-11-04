@@ -13,6 +13,8 @@ mysql:
   user: root
   password: example
   table: mysql_whitelist
+  column_uuid: UUID
+  column_name: user
   useSSL: false
   serverTimezone: UTC
 
