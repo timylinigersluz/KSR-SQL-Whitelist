@@ -18,6 +18,7 @@ import org.bukkit.event.server.ServerCommandEvent;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.Timestamp;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -31,7 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   - add, remove, on, off, list, reload, info
  *
  *  Erweiterung:
- *   - /whitelist info <Spieler> → zeigt Mojang-/Skin-Infos + Online-Status
+ *   - /whitelist info <Spieler> → zeigt Mojang-/Skin-Infos + (optional) Registrierungsdaten
  *
  *  Autor: Timy Liniger (KSR Minecraft)
  *  Projekt: KSR-SQL-Whitelist
@@ -118,7 +119,10 @@ public class WhitelistCommandInterceptor implements Listener {
             // --------------------------------------------------------------
             case "add": {
                 if (!has(sender, "KSRSQLWhitelist.add")) return;
-                if (parts.length < 3) { usage(sender, "whitelist add <player>"); return; }
+                if (parts.length < 3) {
+                    usage(sender, "whitelist add <player>");
+                    return;
+                }
 
                 String target = parts[2];
                 Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
@@ -147,7 +151,10 @@ public class WhitelistCommandInterceptor implements Listener {
             case "rm":
             case "del": {
                 if (!has(sender, "KSRSQLWhitelist.del")) return;
-                if (parts.length < 3) { usage(sender, "whitelist remove <player>"); return; }
+                if (parts.length < 3) {
+                    usage(sender, "whitelist remove <player>");
+                    return;
+                }
 
                 String target = parts[2];
                 Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
@@ -229,35 +236,19 @@ public class WhitelistCommandInterceptor implements Listener {
             // --------------------------------------------------------------
             case "info": {
                 if (!has(sender, "minecraft.command.whitelist")) return;
-                if (parts.length < 3) { usage(sender, "whitelist info <player>"); return; }
+                if (parts.length < 3) {
+                    usage(sender, "whitelist info <player>");
+                    return;
+                }
+
                 String target = parts[2];
 
                 Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
                     try {
-                        // 1️⃣ Whitelist-Status prüfen (lokale DB)
-                        String uuid = null;
-                        boolean whitelisted = false;
-                        try {
-                            String colUUID = service.getDatabase().columnUUID();
-                            String colName = service.getDatabase().columnName();
-                            String table = service.getDatabase().table();
+                        // ✅ 1️⃣ Whitelist-Status prüfen über Service
+                        boolean whitelisted = service.existsInWhitelist(target);
 
-                            String sql = "SELECT `" + colUUID + "`, `" + colName + "` " +
-                                    "FROM `" + table + "` WHERE `" + colName + "` = ? LIMIT 1";
-
-                            try (Connection c = service.getDatabase().openConnection();
-                                 PreparedStatement ps = c.prepareStatement(sql)) {
-                                ps.setString(1, target);
-                                try (ResultSet rs = ps.executeQuery()) {
-                                    if (rs.next()) {
-                                        uuid = rs.getString(colUUID);
-                                        whitelisted = true;
-                                    }
-                                }
-                            }
-                        } catch (Exception ignored) {}
-
-                        // 2️⃣ Öffentliche Mojang-/Ashcon-Daten
+                        // 2️⃣ Mojang-/Ashcon-Daten
                         var info = infoService.fetchInfo(target);
                         if (info == null) {
                             sender.sendMessage(ChatColor.RED + "Player '" + target + "' not found via Mojang API.");
@@ -268,7 +259,42 @@ public class WhitelistCommandInterceptor implements Listener {
                         boolean online = Bukkit.getPlayerExact(info.name) != null &&
                                 Bukkit.getPlayerExact(info.name).isOnline();
 
-                        // 4️⃣ Ausgabe formatieren
+                        // 4️⃣ Registrierungsdaten (optional)
+                        String firstname = null, lastname = null, school = null, email = null, registeredSince = null;
+                        boolean regEnabled = plugin.getConfig().getBoolean("registration.enabled", true);
+                        if (regEnabled) {
+                            try (Connection conn = service.getDatabase().openConnection()) {
+                                String regTable = plugin.getConfig().getString("registration.table", "registrations");
+                                String colUser = plugin.getConfig().getString("registration.column_username", "minecraft_username");
+                                String colFirst = plugin.getConfig().getString("registration.column_firstname", "firstname");
+                                String colLast = plugin.getConfig().getString("registration.column_lastname", "lastname");
+                                String colMail = plugin.getConfig().getString("registration.column_email", "email");
+                                String colSchool = plugin.getConfig().getString("registration.column_school", "school");
+                                String colCreated = plugin.getConfig().getString("registration.column_created_at", "created_at");
+
+                                String sql = "SELECT `" + colFirst + "`, `" + colLast + "`, `" + colMail + "`, `" + colSchool + "`, `" + colCreated + "` " +
+                                        "FROM `" + regTable + "` WHERE `" + colUser + "` = ? LIMIT 1";
+
+                                try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                                    ps.setString(1, target);
+                                    try (ResultSet rs = ps.executeQuery()) {
+                                        if (rs.next()) {
+                                            firstname = rs.getString(colFirst);
+                                            lastname = rs.getString(colLast);
+                                            email = rs.getString(colMail);
+                                            school = rs.getString(colSchool);
+                                            Timestamp ts = rs.getTimestamp(colCreated);
+                                            if (ts != null)
+                                                registeredSince = ts.toString().replace("T", " ");
+                                        }
+                                    }
+                                }
+                            } catch (Exception ex) {
+                                plugin.getLogger().warning("[KSR-SQL-Whitelist] Failed to load registration info for " + target + ": " + ex.getMessage());
+                            }
+                        }
+
+                        // 5️⃣ Ausgabe formatieren
                         sender.sendMessage(ChatColor.GRAY + "------ Player Info ------");
                         sender.sendMessage(ChatColor.YELLOW + "Name: " + ChatColor.WHITE + info.name);
                         sender.sendMessage(ChatColor.YELLOW + "UUID: " + ChatColor.WHITE + info.uuid);
@@ -289,6 +315,14 @@ public class WhitelistCommandInterceptor implements Listener {
 
                         sender.sendMessage(Component.text("Skin: ", NamedTextColor.YELLOW)
                                 .append(info.getClickableSkinComponent()));
+
+                        if (regEnabled && firstname != null) {
+                            sender.sendMessage(ChatColor.GRAY + "------ Registration Info ------");
+                            sender.sendMessage(ChatColor.YELLOW + "Full Name: " + ChatColor.WHITE + firstname + " " + lastname);
+                            sender.sendMessage(ChatColor.YELLOW + "School: " + ChatColor.WHITE + (school != null ? school : "—"));
+                            sender.sendMessage(ChatColor.YELLOW + "Email: " + ChatColor.WHITE + (email != null ? email : "—"));
+                            sender.sendMessage(ChatColor.YELLOW + "Registered: " + ChatColor.WHITE + registeredSince);
+                        }
 
                         sender.sendMessage(ChatColor.YELLOW + "Whitelisted: " +
                                 (whitelisted ? ChatColor.GREEN + "✅" : ChatColor.RED + "❌"));

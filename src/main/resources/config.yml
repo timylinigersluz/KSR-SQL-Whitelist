@@ -4,7 +4,7 @@
 ########################################################
 
 # ================================
-# MySQL Database Settings
+# MySQL Database General-Settings
 # ================================
 mysql:
   host: localhost
@@ -12,11 +12,28 @@ mysql:
   database: KSRMC-Registration
   user: root
   password: example
+  useSSL: false
+  serverTimezone: UTC
+
+# ================================
+# Whitelist Table Settings
+# ================================
   table: mysql_whitelist
   column_uuid: UUID
   column_name: user
-  useSSL: false
-  serverTimezone: UTC
+
+# ================================
+# Registration Table Settings
+# ================================
+registration:
+  enabled: false
+  table: registrations
+  column_username: minecraft_username
+  column_firstname: firstname
+  column_lastname: lastname
+  column_email: email
+  column_school: school
+  column_created_at: created_at
 
 # ================================
 # Whitelist Settings
