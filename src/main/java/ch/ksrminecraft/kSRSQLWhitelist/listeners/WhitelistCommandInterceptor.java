@@ -19,8 +19,10 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Timestamp;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 /**
  * ----------------------------------------------------------------------------
@@ -29,10 +31,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  *  Ersetzt die Vanilla-/whitelist-Kommandos durch SQL-gestützte Logik.
  *
  *  Unterstützte Subcommands:
- *   - add, remove, on, off, list, reload, info
+ *   - add, remove, on, off, list, reload, info, resync
  *
  *  Erweiterung:
- *   - /whitelist info <Spieler> → zeigt Mojang-/Skin-Infos + (optional) Registrierungsdaten
+ *   - /whitelist info <Spieler>   → zeigt Mojang-/Skin-Infos + (optional) Registrierungsdaten
+ *   - /whitelist resync           → synchronisiert MySQL manuell mit der lokalen Fallback-Datenbank
  *
  *  Autor: Timy Liniger (KSR Minecraft)
  *  Projekt: KSR-SQL-Whitelist
@@ -56,10 +59,14 @@ public class WhitelistCommandInterceptor implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onPlayerCommand(PlayerCommandPreprocessEvent e) {
         String raw = e.getMessage().trim();
-        if (!raw.toLowerCase(Locale.ROOT).startsWith("/whitelist")) return;
+        if (!raw.toLowerCase(Locale.ROOT).startsWith("/whitelist")) {
+            return;
+        }
 
         String[] parts = raw.substring(1).split("\\s+");
-        if (parts.length < 2) return;
+        if (parts.length < 2) {
+            return;
+        }
 
         String sub = parts[1].toLowerCase(Locale.ROOT);
         switch (sub) {
@@ -72,6 +79,7 @@ public class WhitelistCommandInterceptor implements Listener {
             case "list":
             case "reload":
             case "info":
+            case "resync":
                 e.setCancelled(true);
                 dispatch(e.getPlayer(), parts);
                 break;
@@ -84,10 +92,14 @@ public class WhitelistCommandInterceptor implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onServerCommand(ServerCommandEvent e) {
         String raw = e.getCommand().trim();
-        if (!raw.toLowerCase(Locale.ROOT).startsWith("whitelist")) return;
+        if (!raw.toLowerCase(Locale.ROOT).startsWith("whitelist")) {
+            return;
+        }
 
         String[] parts = raw.split("\\s+");
-        if (parts.length < 2) return;
+        if (parts.length < 2) {
+            return;
+        }
 
         String sub = parts[1].toLowerCase(Locale.ROOT);
         switch (sub) {
@@ -100,6 +112,7 @@ public class WhitelistCommandInterceptor implements Listener {
             case "list":
             case "reload":
             case "info":
+            case "resync":
                 e.setCancelled(true);
                 dispatch(e.getSender(), parts);
                 break;
@@ -118,7 +131,9 @@ public class WhitelistCommandInterceptor implements Listener {
             // /whitelist add <player>
             // --------------------------------------------------------------
             case "add": {
-                if (!has(sender, "KSRSQLWhitelist.add")) return;
+                if (!has(sender, "KSRSQLWhitelist.add")) {
+                    return;
+                }
                 if (parts.length < 3) {
                     usage(sender, "whitelist add <player>");
                     return;
@@ -138,7 +153,7 @@ public class WhitelistCommandInterceptor implements Listener {
                         }
                     } catch (Exception ex) {
                         sender.sendMessage(ChatColor.RED + "Error while whitelisting player. Check console log.");
-                        ex.printStackTrace();
+                        plugin.getLogger().log(Level.WARNING, "Error while adding player to whitelist: " + target, ex);
                     }
                 });
                 break;
@@ -150,7 +165,9 @@ public class WhitelistCommandInterceptor implements Listener {
             case "remove":
             case "rm":
             case "del": {
-                if (!has(sender, "KSRSQLWhitelist.del")) return;
+                if (!has(sender, "KSRSQLWhitelist.del")) {
+                    return;
+                }
                 if (parts.length < 3) {
                     usage(sender, "whitelist remove <player>");
                     return;
@@ -161,8 +178,13 @@ public class WhitelistCommandInterceptor implements Listener {
                     try {
                         int affected = 0;
                         Player online = plugin.getServer().getPlayerExact(target);
-                        if (online != null) affected = service.deleteByUUID(online.getUniqueId());
-                        if (affected == 0) affected = service.deleteByName(target);
+
+                        if (online != null) {
+                            affected = service.deleteByUUID(online.getUniqueId());
+                        }
+                        if (affected == 0) {
+                            affected = service.deleteByName(target);
+                        }
 
                         if (affected > 0) {
                             sender.sendMessage(ChatColor.RED + target + " is no longer whitelisted!");
@@ -175,14 +197,14 @@ public class WhitelistCommandInterceptor implements Listener {
                         }
                     } catch (Exception ex) {
                         sender.sendMessage(ChatColor.RED + "Error while deleting player. Check console log.");
-                        ex.printStackTrace();
+                        plugin.getLogger().log(Level.WARNING, "Error while removing player from whitelist: " + target, ex);
                     }
                 });
                 break;
             }
 
             // --------------------------------------------------------------
-            // /whitelist on|off|list|reload
+            // /whitelist on
             // --------------------------------------------------------------
             case "on":
                 if (has(sender, "KSRSQLWhitelist.on")) {
@@ -192,6 +214,9 @@ public class WhitelistCommandInterceptor implements Listener {
                 }
                 break;
 
+            // --------------------------------------------------------------
+            // /whitelist off
+            // --------------------------------------------------------------
             case "off":
                 if (has(sender, "KSRSQLWhitelist.off")) {
                     plugin.getConfig().set("enabled", false);
@@ -200,30 +225,52 @@ public class WhitelistCommandInterceptor implements Listener {
                 }
                 break;
 
+            // --------------------------------------------------------------
+            // /whitelist list
+            // --------------------------------------------------------------
             case "list":
-                if (!has(sender, "minecraft.command.whitelist")) return;
+                if (!has(sender, "minecraft.command.whitelist")) {
+                    return;
+                }
+
                 Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
                     try {
-                        var names = service.listWhitelistedNames();
+                        List<String> names;
+                        try {
+                            names = service.listWhitelistedNames();
+                        } catch (Exception ex) {
+                            plugin.getLogger().log(Level.WARNING,
+                                    "MySQL whitelist list failed, trying local fallback.", ex);
+                            names = service.listWhitelistedNamesLocal();
+                        }
+
                         AtomicInteger onlineCount = new AtomicInteger(0);
                         names.forEach(name -> {
                             Player p = plugin.getServer().getPlayerExact(name);
-                            if (p != null && p.isOnline()) onlineCount.incrementAndGet();
+                            if (p != null && p.isOnline()) {
+                                onlineCount.incrementAndGet();
+                            }
                         });
+
                         sender.sendMessage(ChatColor.GRAY + "There are " + onlineCount.get() +
                                 " (of " + names.size() + ") whitelisted players online:");
+
                         if (names.isEmpty()) {
                             sender.sendMessage(ChatColor.GRAY + "[]");
                         } else {
                             sender.sendMessage(ChatColor.WHITE + String.join(", ", names));
                         }
+
                     } catch (Exception ex) {
                         sender.sendMessage(ChatColor.RED + "Error while listing whitelist. Check console log.");
-                        ex.printStackTrace();
+                        plugin.getLogger().log(Level.WARNING, "Error while listing whitelist", ex);
                     }
                 });
                 break;
 
+            // --------------------------------------------------------------
+            // /whitelist reload
+            // --------------------------------------------------------------
             case "reload":
                 if (has(sender, "minecraft.command.whitelist")) {
                     plugin.reloadConfig();
@@ -232,10 +279,32 @@ public class WhitelistCommandInterceptor implements Listener {
                 break;
 
             // --------------------------------------------------------------
+            // /whitelist resync
+            // --------------------------------------------------------------
+            case "resync": {
+                if (!has(sender, "minecraft.command.whitelist")) {
+                    return;
+                }
+
+                Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                    try {
+                        service.syncMysqlToLocalFallback();
+                        sender.sendMessage(ChatColor.GREEN + "Local fallback whitelist cache resynchronized successfully.");
+                    } catch (Exception ex) {
+                        sender.sendMessage(ChatColor.RED + "Resync failed. Existing local fallback cache is still kept.");
+                        plugin.getLogger().log(Level.WARNING, "Manual whitelist resync failed", ex);
+                    }
+                });
+                break;
+            }
+
+            // --------------------------------------------------------------
             // /whitelist info <player>
             // --------------------------------------------------------------
             case "info": {
-                if (!has(sender, "minecraft.command.whitelist")) return;
+                if (!has(sender, "minecraft.command.whitelist")) {
+                    return;
+                }
                 if (parts.length < 3) {
                     usage(sender, "whitelist info <player>");
                     return;
@@ -245,22 +314,27 @@ public class WhitelistCommandInterceptor implements Listener {
 
                 Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
                     try {
-                        // ✅ 1️⃣ Whitelist-Status prüfen über Service
+                        // 1) Whitelist-Status prüfen
                         boolean whitelisted = service.existsInWhitelist(target);
 
-                        // 2️⃣ Mojang-/Ashcon-Daten
+                        // 2) Mojang-/Ashcon-Daten
                         var info = infoService.fetchInfo(target);
                         if (info == null) {
                             sender.sendMessage(ChatColor.RED + "Player '" + target + "' not found via Mojang API.");
                             return;
                         }
 
-                        // 3️⃣ Online-Status prüfen
+                        // 3) Online-Status prüfen
                         boolean online = Bukkit.getPlayerExact(info.name) != null &&
                                 Bukkit.getPlayerExact(info.name).isOnline();
 
-                        // 4️⃣ Registrierungsdaten (optional)
-                        String firstname = null, lastname = null, school = null, email = null, registeredSince = null;
+                        // 4) Registrierungsdaten laden (optional)
+                        String firstname = null;
+                        String lastname = null;
+                        String school = null;
+                        String email = null;
+                        String registeredSince = null;
+
                         boolean regEnabled = plugin.getConfig().getBoolean("registration.enabled", true);
                         if (regEnabled) {
                             try (Connection conn = service.getDatabase().openConnection()) {
@@ -284,8 +358,9 @@ public class WhitelistCommandInterceptor implements Listener {
                                             email = rs.getString(colMail);
                                             school = rs.getString(colSchool);
                                             Timestamp ts = rs.getTimestamp(colCreated);
-                                            if (ts != null)
+                                            if (ts != null) {
                                                 registeredSince = ts.toString().replace("T", " ");
+                                            }
                                         }
                                     }
                                 }
@@ -294,7 +369,7 @@ public class WhitelistCommandInterceptor implements Listener {
                             }
                         }
 
-                        // 5️⃣ Ausgabe formatieren
+                        // 5) Ausgabe
                         sender.sendMessage(ChatColor.GRAY + "------ Player Info ------");
                         sender.sendMessage(ChatColor.YELLOW + "Name: " + ChatColor.WHITE + info.name);
                         sender.sendMessage(ChatColor.YELLOW + "UUID: " + ChatColor.WHITE + info.uuid);
@@ -327,16 +402,16 @@ public class WhitelistCommandInterceptor implements Listener {
                         sender.sendMessage(ChatColor.YELLOW + "Whitelisted: " +
                                 (whitelisted ? ChatColor.GREEN + "✅" : ChatColor.RED + "❌"));
 
-                    } catch (Exception e) {
+                    } catch (Exception ex) {
                         sender.sendMessage(ChatColor.RED + "Error while fetching info for " + target + ".");
-                        e.printStackTrace();
+                        plugin.getLogger().log(Level.WARNING, "Error while fetching whitelist info for " + target, ex);
                     }
                 });
                 break;
             }
 
             default:
-                usage(sender, "whitelist <add|remove|on|off|list|reload|info> ...");
+                usage(sender, "whitelist <add|remove|on|off|list|reload|info|resync>");
         }
     }
 

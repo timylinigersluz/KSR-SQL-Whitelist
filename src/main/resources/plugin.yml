@@ -6,14 +6,14 @@
 #
 # Autor: Timy Liniger
 # Website: https://ksrminecraft.ch/
-# Version: 1.0-SNAPSHOT
+# Version: 1.2
 # ============================================================================
 
 name: KSR-SQL-Whitelist
-version: '1.1'
+version: '1.2'
 main: ch.ksrminecraft.kSRSQLWhitelist.KSRSQLWhitelist
 api-version: '1.21'
-authors: [ "Timy Liniger" ]
+authors: ["Timy Liniger"]
 description: SQL-backed whitelist management
 website: https://ksrminecraft.ch/
 
@@ -21,7 +21,7 @@ website: https://ksrminecraft.ch/
 # ⚙️ PERMISSIONS
 # --------------------------------------------------------------------------
 # Die folgenden Permissions steuern den Zugriff auf die verschiedenen
-# Whitelist-Befehle. Standardmäßig sind alle nur für Operatoren (op) erlaubt.
+# Whitelist-Befehle. Standardmässig sind alle nur für Operatoren (op) erlaubt.
 # --------------------------------------------------------------------------
 
 permissions:
@@ -34,6 +34,7 @@ permissions:
       KSRSQLWhitelist.del: true
       KSRSQLWhitelist.on: true
       KSRSQLWhitelist.off: true
+      whitelist.staff: true
 
   # 🧩 Einzelberechtigungen
   KSRSQLWhitelist.add:
@@ -52,12 +53,16 @@ permissions:
     description: Allows disabling the whitelist
     default: op
 
+  whitelist.staff:
+    description: Allows entering protected worlds
+    default: op
+
 # --------------------------------------------------------------------------
-# ⚙️ Commands
+# ⚙️ COMMANDS
 # --------------------------------------------------------------------------
 
 commands:
   whitelist:
-    description: SQL-Whitelist command interceptor (replaces vanilla /whitelist)
-    usage: /whitelist <add|remove|on|off|list|reload>
+    description: SQL whitelist command interceptor (replaces vanilla /whitelist)
+    usage: /whitelist <add|remove|rm|del|on|off|list|reload|info|resync>
     permission: minecraft.command.whitelist

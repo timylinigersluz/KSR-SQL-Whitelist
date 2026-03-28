@@ -9,45 +9,24 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.sql.*;
 import java.util.*;
+import java.util.logging.Level;
 
-/**
- * ----------------------------------------------------------------------------
- *  🔐 WhitelistService
- *  -------------------
- *  Zentrale Service-Klasse für alle SQL-basierten Whitelist-Operationen.
- *
- *  Hauptfunktionen:
- *   - Prüft, ob Spieler in der Datenbank whitelisted sind
- *   - Fügt neue Spieler hinzu (online oder offline)
- *   - Entfernt Spieler aus der Datenbank
- *   - Listet alle gespeicherten Whitelist-Namen auf
- *   - Synchronisiert UUIDs und Namen automatisch
- *
- *  💡 Besonderheit:
- *   Arbeitet mit {@link Database}, die nur die Verbindungslogik kapselt.
- *   Tabellen- und Spaltennamen werden dynamisch aus "whitelist" in config.yml gelesen.
- *
- *  Autor: Timy Liniger (KSR Minecraft)
- *  Projekt: KSR-SQL-Whitelist
- * ----------------------------------------------------------------------------
- */
 public class WhitelistService {
 
     private final KSRSQLWhitelist plugin;
     private final Database db;
+    private final LocalFallbackDatabase localDb;
 
-    public WhitelistService(KSRSQLWhitelist plugin, Database db) {
+    public WhitelistService(KSRSQLWhitelist plugin, Database db, LocalFallbackDatabase localDb) {
         this.plugin = plugin;
         this.db = db;
+        this.localDb = localDb;
     }
 
-    // ------------------------------------------------------------------------
-    // ✅ Prüfung, ob Spieler whitelisted ist (für Login-Checks)
-    // ------------------------------------------------------------------------
     public boolean isWhitelisted(UUID uuid, String name) throws SQLException {
-        String table = plugin.getConfig().getString("whitelist.table", "mysql_whitelist");
-        String colUUID = plugin.getConfig().getString("whitelist.column_uuid", "UUID");
-        String colName = plugin.getConfig().getString("whitelist.column_name", "user");
+        String table = plugin.getConfig().getString("mysql.table", "mysql_whitelist");
+        String colUUID = plugin.getConfig().getString("mysql.column_uuid", "UUID");
+        String colName = plugin.getConfig().getString("mysql.column_name", "user");
 
         final String selectByUUID = "SELECT `" + colUUID + "` FROM `" + table + "` " +
                 "WHERE `" + colUUID + "` = ? OR REPLACE(`" + colUUID + "`, '-', '') = ? LIMIT 1";
@@ -66,32 +45,37 @@ public class WhitelistService {
             ps.setString(1, uuidDashed);
             ps.setString(2, uuidRaw);
 
-            // 🔍 Treffer über UUID prüfen
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     String found = rs.getString(colUUID);
-                    // korrigiere ggf. fehlerhafte UUID-Formate
+
                     if (found != null && found.length() == 32) {
                         try (PreparedStatement fix = c.prepareStatement(
                                 "UPDATE `" + table + "` SET `" + colUUID + "` = ? WHERE `" + colUUID + "` = ?")) {
                             fix.setString(1, uuidDashed);
                             fix.setString(2, found);
                             fix.executeUpdate();
-                            plugin.getLogger().warning("Fixed malformed UUID for " + name + " (" + found + " → " + uuidDashed + ")");
+                            plugin.getLogger().warning("Fixed malformed UUID for " + name + " (" + found + " -> " + uuidDashed + ")");
                         }
                     }
 
-                    // Namen immer aktuell halten
                     try (PreparedStatement up = c.prepareStatement(updateSetName)) {
                         up.setString(1, name);
                         up.setString(2, uuidDashed);
                         up.executeUpdate();
                     }
+
+                    // lokal spiegeln
+                    try {
+                        localDb.upsert(uuid, name);
+                    } catch (SQLException ex) {
+                        plugin.getLogger().warning("Could not update local fallback cache for " + name + ": " + ex.getMessage());
+                    }
+
                     return true;
                 }
             }
 
-            // 🔍 Fallback: Spielername vorhanden, aber keine UUID
             try (PreparedStatement ps2 = c.prepareStatement(selectByNameNoUUID)) {
                 ps2.setString(1, name);
                 try (ResultSet rs2 = ps2.executeQuery()) {
@@ -101,6 +85,13 @@ public class WhitelistService {
                             up2.setString(2, name);
                             up2.executeUpdate();
                         }
+
+                        try {
+                            localDb.upsert(uuid, name);
+                        } catch (SQLException ex) {
+                            plugin.getLogger().warning("Could not update local fallback cache for " + name + ": " + ex.getMessage());
+                        }
+
                         return true;
                     }
                 }
@@ -110,18 +101,18 @@ public class WhitelistService {
         return false;
     }
 
-    // ------------------------------------------------------------------------
-    // 🧩 Öffentliche Prüfmethode für Commands (/whitelist info)
-    // ------------------------------------------------------------------------
+    public boolean isWhitelistedLocal(UUID uuid, String name) throws SQLException {
+        return localDb.isWhitelisted(uuid, name);
+    }
+
     public boolean existsInWhitelist(String playerName) {
-        String table = plugin.getConfig().getString("whitelist.table", "mysql_whitelist");
-        String colUUID = plugin.getConfig().getString("whitelist.column_uuid", "UUID");
-        String colName = plugin.getConfig().getString("whitelist.column_name", "user");
+        String table = plugin.getConfig().getString("mysql.table", "mysql_whitelist");
+        String colUUID = plugin.getConfig().getString("mysql.column_uuid", "UUID");
+        String colName = plugin.getConfig().getString("mysql.column_name", "user");
 
         boolean whitelisted = false;
 
         try (Connection c = db.openConnection()) {
-            // 🔹 Erst nach Name prüfen
             String sqlByName = "SELECT 1 FROM `" + table + "` WHERE `" + colName + "` = ? LIMIT 1";
             try (PreparedStatement ps = c.prepareStatement(sqlByName)) {
                 ps.setString(1, playerName);
@@ -130,7 +121,6 @@ public class WhitelistService {
                 }
             }
 
-            // 🔹 Fallback über UUID falls nötig
             if (!whitelisted) {
                 String uuid = fetchUUIDFromMojang(playerName);
                 if (uuid != null) {
@@ -151,17 +141,15 @@ public class WhitelistService {
         return whitelisted;
     }
 
-    // ------------------------------------------------------------------------
-    // ➕ Spieler hinzufügen
-    // ------------------------------------------------------------------------
     public void addOrUpdateOnline(Player online) throws SQLException {
         addOrUpdateWhitelist(online.getUniqueId(), online.getName());
+        localDb.upsert(online.getUniqueId(), online.getName());
     }
 
     public void addOfflineName(String name) throws SQLException {
-        String table = plugin.getConfig().getString("whitelist.table", "mysql_whitelist");
-        String colUUID = plugin.getConfig().getString("whitelist.column_uuid", "UUID");
-        String colName = plugin.getConfig().getString("whitelist.column_name", "user");
+        String table = plugin.getConfig().getString("mysql.table", "mysql_whitelist");
+        String colUUID = plugin.getConfig().getString("mysql.column_uuid", "UUID");
+        String colName = plugin.getConfig().getString("mysql.column_name", "user");
 
         final String exists = "SELECT 1 FROM `" + table + "` WHERE `" + colName + "` = ? LIMIT 1";
         final String insert = "INSERT INTO `" + table + "` (`" + colUUID + "`, `" + colName + "`) VALUES (?, ?)";
@@ -187,11 +175,10 @@ public class WhitelistService {
             ins.executeUpdate();
             plugin.getLogger().info("[KSR-SQL-Whitelist] Added Mojang-verified player: " + name + " (" + uuid + ")");
         }
+
+        localDb.upsert(uuid, name);
     }
 
-    // ------------------------------------------------------------------------
-    // 🌍 Mojang API Helper
-    // ------------------------------------------------------------------------
     private String fetchUUIDFromMojang(String playerName) {
         try {
             URL url = new URL("https://api.ashcon.app/mojang/v2/user/" + playerName);
@@ -221,40 +208,42 @@ public class WhitelistService {
         }
     }
 
-    // ------------------------------------------------------------------------
-    // ❌ Spieler löschen
-    // ------------------------------------------------------------------------
     public int deleteByUUID(UUID uuid) throws SQLException {
-        String table = plugin.getConfig().getString("whitelist.table", "mysql_whitelist");
-        String colUUID = plugin.getConfig().getString("whitelist.column_uuid", "UUID");
+        String table = plugin.getConfig().getString("mysql.table", "mysql_whitelist");
+        String colUUID = plugin.getConfig().getString("mysql.column_uuid", "UUID");
 
         final String del = "DELETE FROM `" + table + "` WHERE `" + colUUID + "` = ?";
+        int affected;
         try (Connection c = db.openConnection();
              PreparedStatement ps = c.prepareStatement(del)) {
             ps.setString(1, uuid.toString());
-            return ps.executeUpdate();
+            affected = ps.executeUpdate();
         }
+
+        localDb.deleteByUUID(uuid);
+        return affected;
     }
 
     public int deleteByName(String name) throws SQLException {
-        String table = plugin.getConfig().getString("whitelist.table", "mysql_whitelist");
-        String colName = plugin.getConfig().getString("whitelist.column_name", "user");
+        String table = plugin.getConfig().getString("mysql.table", "mysql_whitelist");
+        String colName = plugin.getConfig().getString("mysql.column_name", "user");
 
         final String del = "DELETE FROM `" + table + "` WHERE `" + colName + "` = ?";
+        int affected;
         try (Connection c = db.openConnection();
              PreparedStatement ps = c.prepareStatement(del)) {
             ps.setString(1, name);
-            return ps.executeUpdate();
+            affected = ps.executeUpdate();
         }
+
+        localDb.deleteByName(name);
+        return affected;
     }
 
-    // ------------------------------------------------------------------------
-    // 🧩 Upsert (Insert or Update)
-    // ------------------------------------------------------------------------
     private void addOrUpdateWhitelist(UUID uuid, String name) throws SQLException {
-        String table = plugin.getConfig().getString("whitelist.table", "mysql_whitelist");
-        String colUUID = plugin.getConfig().getString("whitelist.column_uuid", "UUID");
-        String colName = plugin.getConfig().getString("whitelist.column_name", "user");
+        String table = plugin.getConfig().getString("mysql.table", "mysql_whitelist");
+        String colUUID = plugin.getConfig().getString("mysql.column_uuid", "UUID");
+        String colName = plugin.getConfig().getString("mysql.column_name", "user");
 
         final String upsert = "INSERT INTO `" + table + "` (`" + colUUID + "`, `" + colName + "`) VALUES (?, ?) " +
                 "ON DUPLICATE KEY UPDATE `" + colName + "` = VALUES(`" + colName + "`)";
@@ -267,12 +256,9 @@ public class WhitelistService {
         }
     }
 
-    // ------------------------------------------------------------------------
-    // 📋 Whitelist abrufen
-    // ------------------------------------------------------------------------
     public List<String> listWhitelistedNames() throws SQLException {
-        String table = plugin.getConfig().getString("whitelist.table", "mysql_whitelist");
-        String colName = plugin.getConfig().getString("whitelist.column_name", "user");
+        String table = plugin.getConfig().getString("mysql.table", "mysql_whitelist");
+        String colName = plugin.getConfig().getString("mysql.column_name", "user");
 
         final String sql = "SELECT DISTINCT `" + colName + "` FROM `" + table + "` " +
                 "WHERE `" + colName + "` IS NOT NULL AND `" + colName + "` <> ''";
@@ -288,10 +274,47 @@ public class WhitelistService {
         return out;
     }
 
-    // ------------------------------------------------------------------------
-    // 🧱 Getter für Database
-    // ------------------------------------------------------------------------
+    public List<String> listWhitelistedNamesLocal() throws SQLException {
+        return localDb.listWhitelistedNames();
+    }
+
+    public void syncMysqlToLocalFallback() throws SQLException {
+        String table = plugin.getConfig().getString("mysql.table", "mysql_whitelist");
+        String colUUID = plugin.getConfig().getString("mysql.column_uuid", "UUID");
+        String colName = plugin.getConfig().getString("mysql.column_name", "user");
+
+        final String sql = "SELECT `" + colUUID + "`, `" + colName + "` FROM `" + table + "`";
+
+        List<LocalFallbackDatabase.WhitelistEntry> entries = new ArrayList<>();
+
+        try (Connection c = db.openConnection();
+             PreparedStatement ps = c.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+
+            while (rs.next()) {
+                String uuid = rs.getString(colUUID);
+                String name = rs.getString(colName);
+
+                if (uuid == null || uuid.isBlank()) {
+                    continue;
+                }
+                if (name == null || name.isBlank()) {
+                    continue;
+                }
+
+                entries.add(new LocalFallbackDatabase.WhitelistEntry(uuid, name));
+            }
+        }
+
+        localDb.replaceAll(entries);
+        plugin.getLogger().info("Local whitelist fallback cache synchronized successfully (" + entries.size() + " entries).");
+    }
+
     public Database getDatabase() {
         return db;
+    }
+
+    public LocalFallbackDatabase getLocalDatabase() {
+        return localDb;
     }
 }

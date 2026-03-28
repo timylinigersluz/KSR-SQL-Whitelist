@@ -15,9 +15,9 @@ mysql:
   useSSL: false
   serverTimezone: UTC
 
-# ================================
-# Whitelist Table Settings
-# ================================
+  # ================================
+  # Whitelist Table Settings
+  # ================================
   table: mysql_whitelist
   column_uuid: UUID
   column_name: user
@@ -38,13 +38,52 @@ registration:
 # ================================
 # Whitelist Settings
 # ================================
-
-# Ob die Whitelist beim Start aktiviert ist (true/false)
 enabled: true
 
+# ================================
 # Kick-Messages
-
+# ================================
 kick:
   not_whitelisted: "&cLeider bist du nicht auf unserer Whitelist.&r\n&7Registriere dich auf https://ksrminecraft.ch."
   db_error: "&cEs gab einen internen Fehler mit der Datenbank.&r\n&7Bitte versuche es später erneut oder melde dich auf unserem Discord."
 
+# ================================
+# Protected Worlds
+# ================================
+protected-worlds:
+  enabled: true
+
+  # Beispiele:
+  #   staffworld
+  #   mm_*
+  #   *
+  worlds:
+    - "*"
+
+  # Optional: Wenn gesetzt, werden Spieler statt bestraft dorthin umgeleitet.
+  # fallback-world: world
+
+  # Clusterweite Kurzsperre nach Verstoss in Sekunden.
+  # Dadurch kann der Spieler nach dem LiteBans-Kick nicht sofort wieder joinen.
+  block-duration-seconds: 120
+
+  # Eigene zentrale Tabelle für kurzfristige Join-Blocks im Cluster
+  block-table: ksr_protected_world_blocks
+
+  punishment:
+    reason: "Unerlaubter Beitritt zu geschuetzter Testumgebung"
+
+messages:
+  protected_world: "&cNope! Du darfst diese Welt nicht betreten."
+
+# ================================
+# Local Fallback Database
+# ================================
+fallback:
+  enabled: true
+  file: fallback-whitelist.db
+  sync-on-startup: true
+
+  resync:
+    enabled: true
+    interval-hours: 24

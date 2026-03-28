@@ -2,100 +2,134 @@ package ch.ksrminecraft.kSRSQLWhitelist;
 
 import ch.ksrminecraft.kSRSQLWhitelist.listeners.PreLoginListener;
 import ch.ksrminecraft.kSRSQLWhitelist.listeners.WhitelistCommandInterceptor;
+import ch.ksrminecraft.kSRSQLWhitelist.listeners.WorldAccessListener;
 import ch.ksrminecraft.kSRSQLWhitelist.utils.Database;
+import ch.ksrminecraft.kSRSQLWhitelist.utils.LocalFallbackDatabase;
+import ch.ksrminecraft.kSRSQLWhitelist.utils.ProtectedAccessBlockService;
 import ch.ksrminecraft.kSRSQLWhitelist.utils.WhitelistService;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
-/**
- * ----------------------------------------------------------------------------
- *  🧩 KSRSQLWhitelist
- *  ------------------
- *  Hauptklasse des Plugins "KSR-SQL-Whitelist".
- *
- *  Verantwortlichkeiten:
- *   - Initialisierung aller Hauptkomponenten (Config, Datenbank, Services, Listener)
- *   - Registrierung von Event-Listenern
- *   - Sicherstellen, dass die SQL-Tabelle existiert
- *   - Lifecycle-Logging (enable/disable)
- *
- *  💡 Dieses Plugin ersetzt die Vanilla-Whitelist durch eine SQL-basierte Variante,
- *     um die Whitelist zentral für mehrere Server zu verwalten.
- *
- *  Autor: Timy Liniger (KSR Minecraft)
- *  Projekt: KSR-SQL-Whitelist
- * ----------------------------------------------------------------------------
- */
 public class KSRSQLWhitelist extends JavaPlugin {
 
-    /** Verwaltet den Zugriff auf die MySQL-Datenbank. */
     private Database database;
-
-    /** Kapselt alle Whitelist-bezogenen Datenbankoperationen. */
+    private LocalFallbackDatabase localFallbackDatabase;
     private WhitelistService whitelistService;
+    private ProtectedAccessBlockService protectedAccessBlockService;
 
-    // ------------------------------------------------------------------------
-    // 🚀 Plugin-Start
-    // ------------------------------------------------------------------------
+    private final AtomicBoolean mysqlUnavailable = new AtomicBoolean(false);
 
-    /**
-     * Wird beim Aktivieren des Plugins aufgerufen (z. B. beim Serverstart oder Reload).
-     * <p>
-     * Initialisiert alle zentralen Komponenten und registriert Event-Listener.
-     */
     @Override
     public void onEnable() {
-        // 1️⃣ Standard-Config laden oder neu erzeugen, falls sie fehlt
         saveDefaultConfig();
 
-        // 2️⃣ Datenbank-Manager und Whitelist-Service initialisieren
-        database = new Database(this);
-        whitelistService = new WhitelistService(this, database);
-
-        // 3️⃣ Sicherstellen, dass die Whitelist-Tabelle existiert
-        try {
-            database.ensureTable();
-        } catch (Exception e) {
-            getLogger().log(Level.SEVERE, "Failed to ensure DB table", e);
+        if (!getDataFolder().exists()) {
+            getDataFolder().mkdirs();
         }
 
-        // 4️⃣ Event-Listener registrieren
+        database = new Database(this);
+        localFallbackDatabase = new LocalFallbackDatabase(this);
+        whitelistService = new WhitelistService(this, database, localFallbackDatabase);
+        protectedAccessBlockService = new ProtectedAccessBlockService(this, database);
+
+        try {
+            localFallbackDatabase.ensureTable();
+            getLogger().info("Local fallback whitelist database ready.");
+        } catch (Exception e) {
+            getLogger().log(Level.SEVERE, "Failed to initialize local fallback database", e);
+        }
+
+        try {
+            database.ensureTable();
+            protectedAccessBlockService.ensureTable();
+            protectedAccessBlockService.purgeExpired();
+            handleMysqlRecovery();
+        } catch (Exception e) {
+            getLogger().log(Level.WARNING,
+                    "MySQL whitelist table could not be reached during startup. Local fallback cache will be used.",
+                    e);
+            mysqlUnavailable.set(true);
+        }
+
+        if (getConfig().getBoolean("fallback.sync-on-startup", true)) {
+            try {
+                whitelistService.syncMysqlToLocalFallback();
+                handleMysqlRecovery();
+            } catch (Exception e) {
+                getLogger().log(Level.WARNING,
+                        "Startup sync MySQL -> local fallback failed. Existing local cache will still be used.",
+                        e);
+                mysqlUnavailable.set(true);
+            }
+        }
+
+        startFallbackResyncTask();
+
         getServer().getPluginManager().registerEvents(new PreLoginListener(this, whitelistService), this);
         getServer().getPluginManager().registerEvents(new WhitelistCommandInterceptor(this, whitelistService), this);
-        getCommand("whitelist").setTabCompleter(new ch.ksrminecraft.kSRSQLWhitelist.commands.WhitelistTabCompleter(this));
+        getServer().getPluginManager().registerEvents(new WorldAccessListener(this), this);
 
-        // 5️⃣ Erfolgsnachricht ins Log schreiben
+        if (getCommand("whitelist") != null) {
+            getCommand("whitelist").setTabCompleter(
+                    new ch.ksrminecraft.kSRSQLWhitelist.commands.WhitelistTabCompleter(this)
+            );
+        }
+
         getLogger().info(getDescription().getName() + " v" + getDescription().getVersion() + " enabled.");
     }
 
-    // ------------------------------------------------------------------------
-    // 📴 Plugin-Stopp
-    // ------------------------------------------------------------------------
-
-    /**
-     * Wird beim Deaktivieren des Plugins aufgerufen (z. B. bei Serverstopp).
-     * <p>
-     * Da keine dauerhaften Verbindungen bestehen, ist kein spezielles Cleanup nötig.
-     */
     @Override
     public void onDisable() {
         getLogger().info(getDescription().getName() + " v" + getDescription().getVersion() + " disabled.");
     }
 
-    // ------------------------------------------------------------------------
-    // 🧠 Getter
-    // ------------------------------------------------------------------------
-
-    /**
-     * Gibt den aktiven WhitelistService zurück.
-     * <p>
-     * Kann von anderen Plugins oder Command-Klassen verwendet werden,
-     * um z. B. Whitelist-Einträge programmgesteuert zu prüfen oder zu ändern.
-     *
-     * @return Instanz des {@link WhitelistService}
-     */
     public WhitelistService getWhitelistService() {
         return whitelistService;
+    }
+
+    public ProtectedAccessBlockService getProtectedAccessBlockService() {
+        return protectedAccessBlockService;
+    }
+
+    private void startFallbackResyncTask() {
+        boolean fallbackEnabled = getConfig().getBoolean("fallback.enabled", true);
+        boolean resyncEnabled = getConfig().getBoolean("fallback.resync.enabled", true);
+        int intervalHours = Math.max(1, getConfig().getInt("fallback.resync.interval-hours", 24));
+
+        if (!fallbackEnabled || !resyncEnabled) {
+            getLogger().info("Fallback whitelist resync task is disabled.");
+            return;
+        }
+
+        long intervalTicks = intervalHours * 60L * 60L * 20L;
+
+        getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+            try {
+                whitelistService.syncMysqlToLocalFallback();
+                protectedAccessBlockService.purgeExpired();
+                handleMysqlRecovery();
+                getLogger().info("Scheduled fallback whitelist resync completed successfully.");
+            } catch (Exception e) {
+                handleMysqlFailure("Scheduled fallback whitelist resync failed. Keeping existing local cache.", e);
+            }
+        }, intervalTicks, intervalTicks);
+
+        getLogger().info("Started fallback whitelist resync task (every " + intervalHours + "h / " + intervalTicks + " ticks).");
+    }
+
+    public void handleMysqlFailure(String message, Exception exception) {
+        if (mysqlUnavailable.compareAndSet(false, true)) {
+            getLogger().log(Level.WARNING, message, exception);
+        } else {
+            getLogger().info("MySQL still unavailable, using local whitelist fallback.");
+        }
+    }
+
+    public void handleMysqlRecovery() {
+        if (mysqlUnavailable.compareAndSet(true, false)) {
+            getLogger().info("MySQL connection restored.");
+        }
     }
 }

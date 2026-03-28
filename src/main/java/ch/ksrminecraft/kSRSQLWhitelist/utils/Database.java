@@ -17,14 +17,18 @@ import java.util.logging.Level;
  *  KSR-SQL-Whitelist-Plugin.
  *
  *  Hauptfunktionen:
- *   - Aufbau einer JDBC-Verbindung gemäß Konfiguration
+ *   - Aufbau einer JDBC-Verbindung gemäss Konfiguration
  *   - Erstellung der Whitelist-Tabelle, falls sie noch nicht existiert
- *   - Zugriff auf konfigurierbare Tabellennamen und Spaltennamen
+ *   - Zugriff auf konfigurierbare Tabellen- und Spaltennamen
  *
  *  💡 Besonderheit:
  *   Über die Felder {@code mysql.column_uuid} und {@code mysql.column_name}
- *   kann in der config.yml definiert werden, wie die Spalten in der Datenbank heißen.
+ *   kann in der config.yml definiert werden, wie die Spalten in der Datenbank heissen.
  *   Dadurch ist das Plugin flexibel gegenüber unterschiedlichen Datenbankschemata.
+ *
+ *  Wichtig:
+ *   Die UUID-Spalte wird als PRIMARY KEY angelegt, damit
+ *   {@code ON DUPLICATE KEY UPDATE} im WhitelistService korrekt funktioniert.
  *
  *  Autor: Timy Liniger (KSR Minecraft)
  *  Projekt: KSR-SQL-Whitelist
@@ -38,7 +42,7 @@ public class Database {
     /**
      * Konstruktor.
      *
-     * @param plugin Hauptinstanz des KSR-SQL-Whitelist-Plugins.
+     * @param plugin Hauptinstanz des KSR-SQL-Whitelist-Plugins
      */
     public Database(KSRSQLWhitelist plugin) {
         this.plugin = plugin;
@@ -50,27 +54,25 @@ public class Database {
 
     /**
      * Öffnet eine neue Verbindung zur MySQL-Datenbank auf Basis der Konfiguration.
-     * <p>
-     * ⚠️ Hinweis: Diese Methode erstellt jedes Mal eine neue Verbindung und sollte
-     * daher nicht dauerhaft im Hauptthread verwendet werden. Für wiederholte
-     * Abfragen empfiehlt sich ein Connection-Pool (z. B. HikariCP).
+     *
+     * ⚠️ Hinweis:
+     * Diese Methode erstellt jedes Mal eine neue Verbindung und sollte daher
+     * nicht dauerhaft im Hauptthread verwendet werden. Für viele wiederholte
+     * Abfragen wäre langfristig ein Connection-Pool (z. B. HikariCP) sinnvoll.
      *
      * @return Aktive {@link Connection} zur Datenbank
      * @throws SQLException Wenn der Verbindungsaufbau fehlschlägt
      */
     public Connection openConnection() throws SQLException {
-        // Pflichtfelder aus der Konfiguration lesen
         String host = req("mysql.host");
         int port = plugin.getConfig().getInt("mysql.port", 3306);
-        String db   = req("mysql.database");
+        String db = req("mysql.database");
         String user = req("mysql.user");
         String pass = req("mysql.password");
 
-        // SSL und Zeitzone – optional konfigurierbar
         boolean useSSL = plugin.getConfig().getBoolean("mysql.useSSL", false);
         String serverTimezone = plugin.getConfig().getString("mysql.serverTimezone", "UTC");
 
-        // Zusätzliche Verbindungsparameter
         String params = String.join("&",
                 "useUnicode=true",
                 "characterEncoding=UTF-8",
@@ -78,10 +80,7 @@ public class Database {
                 "serverTimezone=" + serverTimezone
         );
 
-        // Aufbau der finalen JDBC-URL
         String url = "jdbc:mysql://" + host + ":" + port + "/" + db + "?" + params;
-
-        // Verbindung herstellen
         return DriverManager.getConnection(url, user, pass);
     }
 
@@ -124,35 +123,37 @@ public class Database {
 
     /**
      * Erstellt die Whitelist-Tabelle, falls sie noch nicht existiert.
-     * <p>
+     *
      * Diese Methode nutzt die aktuell in der Config definierten Spaltennamen.
      * Sie wird typischerweise beim Plugin-Start aufgerufen.
+     *
+     * Wichtige Designentscheidung:
+     * - Die UUID-Spalte ist PRIMARY KEY
+     * - Der Spielername erhält einen normalen Index
      *
      * Beispielhafte SQL-Struktur:
      * <pre>
      * CREATE TABLE IF NOT EXISTS `mysql_whitelist` (
-     *   `UUID` varchar(36) DEFAULT NULL,
+     *   `UUID` varchar(36) NOT NULL,
      *   `user` varchar(100) DEFAULT NULL,
-     *   KEY `idx_uuid` (`UUID`),
+     *   PRIMARY KEY (`UUID`),
      *   KEY `idx_user` (`user`)
-     * ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+     * ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
      * </pre>
      *
      * @throws SQLException Falls die SQL-Ausführung fehlschlägt
      */
     public void ensureTable() throws SQLException {
         String sql = "CREATE TABLE IF NOT EXISTS `" + table() + "` ("
-                + "`" + columnUUID() + "` varchar(36) DEFAULT NULL,"
+                + "`" + columnUUID() + "` varchar(36) NOT NULL,"
                 + "`" + columnName() + "` varchar(100) DEFAULT NULL,"
-                + "KEY `idx_uuid` (`" + columnUUID() + "`),"
+                + "PRIMARY KEY (`" + columnUUID() + "`),"
                 + "KEY `idx_user` (`" + columnName() + "`)"
                 + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;";
 
-        try (Connection c = openConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = openConnection();
+             PreparedStatement ps = c.prepareStatement(sql)) {
             ps.execute();
-        } catch (SQLException e) {
-            plugin.getLogger().log(Level.SEVERE, "Failed to ensure whitelist table", e);
-            throw e;
         }
     }
 
