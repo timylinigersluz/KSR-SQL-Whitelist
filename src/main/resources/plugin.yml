@@ -6,13 +6,13 @@
 #
 # Autor: Timy Liniger
 # Website: https://ksrminecraft.ch/
-# Version: 1.2
+# Version: 1.3
 # ============================================================================
 
 name: KSR-SQL-Whitelist
-version: '1.2'
+version: '1.3'
 main: ch.ksrminecraft.kSRSQLWhitelist.KSRSQLWhitelist
-api-version: '1.21'
+api-version: '26.1'
 authors: ["Timy Liniger"]
 description: SQL-backed whitelist management
 website: https://ksrminecraft.ch/

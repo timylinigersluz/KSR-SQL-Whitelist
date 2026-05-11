@@ -2,6 +2,8 @@ package ch.ksrminecraft.kSRSQLWhitelist.listeners;
 
 import ch.ksrminecraft.kSRSQLWhitelist.KSRSQLWhitelist;
 import ch.ksrminecraft.kSRSQLWhitelist.utils.MessageUtil;
+import com.destroystokyo.paper.profile.PlayerProfile;
+import io.papermc.paper.event.player.AsyncPlayerSpawnLocationEvent;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -13,10 +15,10 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
-import org.spigotmc.event.player.PlayerSpawnLocationEvent;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -42,8 +44,20 @@ public class WorldAccessListener implements Listener {
 
     /**
      * Spieler, deren Spawn bereits als unzulässig erkannt wurde.
+     * Wird nur verwendet, wenn keine fallback-world konfiguriert ist.
      */
     private final Set<UUID> flaggedOnSpawn = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Originale geschützte Spawnpositionen, falls wir im Async-Spawn-Event
+     * zuerst auf die fallback-world umleiten mussten.
+     *
+     * Grund:
+     * AsyncPlayerSpawnLocationEvent hat bewusst keinen normalen Player.
+     * Permissions wie whitelist.staff können daher erst im Join-Event
+     * zuverlässig geprüft werden.
+     */
+    private final Map<UUID, Location> redirectedProtectedSpawnTargets = new ConcurrentHashMap<>();
 
     /**
      * Schutz gegen doppelte Verarbeitung innerhalb desselben sehr kurzen Zeitfensters.
@@ -55,13 +69,8 @@ public class WorldAccessListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
-    public void onSpawnLocation(PlayerSpawnLocationEvent event) {
+    public void onAsyncSpawnLocation(AsyncPlayerSpawnLocationEvent event) {
         if (!isProtectionEnabled()) {
-            return;
-        }
-
-        Player player = event.getPlayer();
-        if (canEnterProtectedWorlds(player)) {
             return;
         }
 
@@ -75,15 +84,28 @@ public class WorldAccessListener implements Listener {
             return;
         }
 
+        PlayerProfile profile = event.getConnection().getProfile();
+        UUID uuid = profile.getId();
+        String playerName = profile.getName() != null ? profile.getName() : "unknown";
+
         Location fallback = getFallbackLocation();
+
         if (fallback != null) {
             event.setSpawnLocation(fallback);
-            plugin.getLogger().info("Protected-world redirect on spawn for " + player.getName()
-                    + " -> " + fallback.getWorld().getName());
+
+            if (uuid != null) {
+                redirectedProtectedSpawnTargets.put(uuid, spawn.clone());
+            }
+
+            plugin.getLogger().info("Protected-world redirect on async spawn for "
+                    + playerName + " -> " + fallback.getWorld().getName());
         } else {
-            flaggedOnSpawn.add(player.getUniqueId());
-            plugin.getLogger().warning("Protected-world access detected on spawn for "
-                    + player.getName() + " in world '" + targetWorldName
+            if (uuid != null) {
+                flaggedOnSpawn.add(uuid);
+            }
+
+            plugin.getLogger().warning("Protected-world access detected on async spawn for "
+                    + playerName + " in world '" + targetWorldName
                     + "' without fallback-world configured.");
         }
     }
@@ -93,8 +115,15 @@ public class WorldAccessListener implements Listener {
         Player player = event.getPlayer();
         UUID uuid = player.getUniqueId();
 
+        Location originalProtectedSpawn = redirectedProtectedSpawnTargets.remove(uuid);
+        if (originalProtectedSpawn != null) {
+            handleRedirectedSpawnJoin(player, originalProtectedSpawn);
+        }
+
         if (flaggedOnSpawn.remove(uuid)) {
-            punishProtectedWorldAccess(player, "join-after-protected-spawn");
+            if (!canEnterProtectedWorlds(player)) {
+                punishProtectedWorldAccess(player, "join-after-protected-spawn");
+            }
             return;
         }
 
@@ -117,13 +146,13 @@ public class WorldAccessListener implements Listener {
 
         Location fallback = getFallbackLocation();
         if (fallback != null) {
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
                 if (!player.isOnline()) {
                     return;
                 }
                 player.teleport(fallback);
                 player.sendMessage(getProtectedWorldMessage());
-            });
+            }, 1L);
 
             plugin.getLogger().warning("Player " + player.getName()
                     + " joined protected world '" + currentWorld.getName()
@@ -131,6 +160,33 @@ public class WorldAccessListener implements Listener {
         } else {
             punishProtectedWorldAccess(player, "join-in-protected-world");
         }
+    }
+
+    private void handleRedirectedSpawnJoin(Player player, Location originalProtectedSpawn) {
+        if (!isProtectionEnabled()) {
+            return;
+        }
+
+        if (canEnterProtectedWorlds(player)) {
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (!player.isOnline()) {
+                    return;
+                }
+
+                if (originalProtectedSpawn.getWorld() == null) {
+                    return;
+                }
+
+                player.teleport(originalProtectedSpawn);
+            }, 1L);
+
+            plugin.getLogger().info("Allowed staff player " + player.getName()
+                    + " to return to protected spawn world '"
+                    + originalProtectedSpawn.getWorld().getName() + "'.");
+            return;
+        }
+
+        player.sendMessage(getProtectedWorldMessage());
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -158,13 +214,13 @@ public class WorldAccessListener implements Listener {
 
         Location fallback = getFallbackLocation();
         if (fallback != null) {
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
                 if (!player.isOnline()) {
                     return;
                 }
                 player.teleport(fallback);
                 player.sendMessage(getProtectedWorldMessage());
-            });
+            }, 1L);
 
             plugin.getLogger().warning("Blocked teleport of " + player.getName()
                     + " into protected world '" + targetWorldName
@@ -178,7 +234,7 @@ public class WorldAccessListener implements Listener {
      * Führt die Schutzreaktion aus:
      * - clusterweiten Kurzblock setzen
      * - LiteBans-Kick dokumentieren
-     * - Notfallmässig lokal kicken, falls der Command fehlschlägt
+     * - notfallmässig lokal kicken, falls der Command fehlschlägt
      */
     private void punishProtectedWorldAccess(Player player, String context) {
         UUID uuid = player.getUniqueId();
